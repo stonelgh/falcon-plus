@@ -15,17 +15,21 @@
 package sender
 
 import (
+	"context"
 	"fmt"
 	"log"
 
-	"github.com/influxdata/influxdb/client/v2"
+	"time"
+
+	client "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	backend "github.com/open-falcon/falcon-plus/common/backend_pool"
 	cmodel "github.com/open-falcon/falcon-plus/common/model"
 	"github.com/open-falcon/falcon-plus/modules/transfer/g"
 	"github.com/open-falcon/falcon-plus/modules/transfer/proc"
 	rings "github.com/toolkits/consistent/rings"
 	nlist "github.com/toolkits/container/list"
-	"time"
 )
 
 const (
@@ -72,50 +76,31 @@ var (
 
 // infludbConn
 type InfluxClient struct {
-	Client    client.Client
+	Client    api.WriteAPIBlocking
 	Database  string
 	Precision string
 }
 
 func NewInfluxdbClient() (*InfluxClient, error) {
-	c, err := client.NewHTTPClient(client.HTTPConfig{
-		Addr:     g.Config().Influxdb.Address,
-		Username: g.Config().Influxdb.Username,
-		Password: g.Config().Influxdb.Password,
-		Timeout:  time.Millisecond * time.Duration(g.Config().Influxdb.Timeout),
-	})
-
-	if err != nil {
-		return nil, err
-	}
+	c := client.NewClient(g.Config().Influxdb.Address, g.Config().Influxdb.Password)
+	writeAPI := c.WriteAPIBlocking(g.Config().Influxdb.Username, g.Config().Influxdb.Database)
 
 	return &InfluxClient{
-		Client:    c,
+		Client:    writeAPI,
 		Database:  g.Config().Influxdb.Database,
 		Precision: g.Config().Influxdb.Precision,
 	}, nil
 }
 
 func (c *InfluxClient) Send(items []*cmodel.InfluxdbItem) error {
-	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
-		Database:  c.Database,
-		Precision: c.Precision,
-	})
-	if err != nil {
-		log.Println("create batch points error: ", err)
-		return err
+	bp := make([]*write.Point, len(items))
+	for i, item := range items {
+		pt := write.NewPoint(item.Measurement, item.Tags, item.Fileds, time.Unix(item.Timestamp, 0))
+		bp[i] = pt
 	}
-
-	for _, item := range items {
-		pt, err := client.NewPoint(item.Measurement, item.Tags, item.Fileds, time.Unix(item.Timestamp, 0))
-		if err != nil {
-			log.Println("create new points error: ", err)
-			continue
-		}
-		bp.AddPoint(pt)
-	}
-
-	return c.Client.Write(bp)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(g.Config().Influxdb.Timeout))
+	defer cancel()
+	return c.Client.WritePoint(ctx, bp...)
 }
 
 // 初始化数据发送服务, 在main函数中调用

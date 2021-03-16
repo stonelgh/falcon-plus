@@ -326,7 +326,8 @@ func forward2InfluxdbTask(concurrent int) {
 
 			var err error
 			c, err := NewInfluxdbClient()
-			defer c.Client.Close()
+			// TODO: defer client.Close()
+			// defer c.Client.Close()
 
 			if err != nil {
 				log.Println(errors.ErrorStack(err))
