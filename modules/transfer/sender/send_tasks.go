@@ -16,8 +16,10 @@ package sender
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"math/rand"
+	"regexp"
 	"time"
 
 	"github.com/juju/errors"
@@ -311,13 +313,23 @@ func convert(v *cmodel.MetaData) *cmodel.MetricValue {
 func forward2InfluxdbTask(concurrent int) {
 	batch := g.Config().Influxdb.Batch // 一次发送,最多batch条数据
 	retry := g.Config().Influxdb.MaxRetry
+	var logFilter *regexp.Regexp
+	if exp := g.Config().Influxdb.LogFilter; exp != "" {
+		logFilter = regexp.MustCompile(exp)
+	}
 	sema := nsema.NewSemaphore(concurrent)
+	ts := time.Time{}
 
 	for {
 		items := InfluxdbQueue.PopBackBy(batch)
 		if len(items) == 0 {
 			time.Sleep(DefaultSendTaskSleepInterval)
 			continue
+		}
+		if time.Since(ts) > 60*time.Second {
+			counter := proc.SendToInfluxdbCnt.Get()
+			log.Printf("sent=%v, qps=%v, err=%v", counter.Cnt, counter.Qps, proc.SendToInfluxdbFailCnt.Get().Cnt)
+			ts = time.Now()
 		}
 		//  同步Call + 有限并发 进行发送
 		sema.Acquire()
@@ -336,7 +348,14 @@ func forward2InfluxdbTask(concurrent int) {
 
 			items := make([]*cmodel.InfluxdbItem, 0, batch)
 			for _, i := range itemList {
-				items = append(items, i.(*cmodel.InfluxdbItem))
+				it := i.(*cmodel.InfluxdbItem)
+				items = append(items, it)
+				if logFilter != nil {
+					data, _ := json.Marshal(it)
+					if logFilter.Match(data) {
+						log.Printf("influxdb forwarder match report: %+v", it)
+					}
+				}
 			}
 
 			for i := 0; i < retry; i++ {

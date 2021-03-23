@@ -96,6 +96,7 @@ type InfluxdbConfig struct {
 	Username  string `json:"username"`
 	Password  string `json:"password"`
 	Precision string `json:"precision"`
+	LogFilter string `json:"logFilter"`
 }
 
 type GlobalConfig struct {
