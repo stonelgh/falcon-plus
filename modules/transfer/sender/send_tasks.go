@@ -17,9 +17,12 @@ package sender
 import (
 	"bytes"
 	"encoding/json"
+	"io/ioutil"
 	"log"
 	"math/rand"
+	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/juju/errors"
@@ -251,9 +254,15 @@ func forward2TransferTask(Q *list.SafeListLimited, concurrent int) {
 			continue
 		}
 
+		// now := time.Now().Unix()
 		transferItems := make([]*cmodel.MetricValue, count)
 		for i := 0; i < count; i++ {
 			transferItems[i] = convert(items[i].(*cmodel.MetaData))
+			// if tz := (transferItems[i].Timestamp - now) / 1800; tz != 0 {
+			// 	old := transferItems[i].Timestamp
+			// 	transferItems[i].Timestamp -= tz * 1800
+			// 	log.Printf("adjust time from %v to %v, tz=%v", old, transferItems[i].Timestamp, float32(tz)/2)
+			// }
 		}
 
 		//	同步Call + 有限并发 进行发送
@@ -265,6 +274,8 @@ func forward2TransferTask(Q *list.SafeListLimited, concurrent int) {
 			resp := &cmodel.TransferResponse{}
 			var err error
 			sendOk := false
+
+			httpClients := make(map[string]*http.Client)
 
 			for j := 0; j < retry && !sendOk; j++ {
 				rint := rand.Int()
@@ -280,7 +291,16 @@ func forward2TransferTask(Q *list.SafeListLimited, concurrent int) {
 					}
 
 					pfc.Counter(host, 1)
-					err = TransferConnPools.Call(addr, "Transfer.Update", transferItems, resp)
+					if strings.HasPrefix(addr, "http") {
+						client := httpClients[addr]
+						if client == nil {
+							client = &http.Client{Timeout: 3 * time.Second}
+							httpClients[addr] = client
+						}
+						err = forwardViaHttp(client, addr, transferItems)
+					} else {
+						err = TransferConnPools.Call(addr, "Transfer.Update", transferItems, resp)
+					}
 					pfc.Counter(host, -1)
 
 					// statistics
@@ -295,6 +315,28 @@ func forward2TransferTask(Q *list.SafeListLimited, concurrent int) {
 			}
 		}(transferItems, count)
 	}
+}
+
+func forwardViaHttp(client *http.Client, url string, transferItems []*cmodel.MetricValue) error {
+	body, err := json.Marshal(transferItems)
+	if err != nil {
+		return err
+	}
+	reqPost, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		log.Println("Error =", err.Error())
+	}
+	reqPost.Header.Set("Content-Type", "application/json")
+
+	// client := &http.Client{}
+	resp, err := client.Do(reqPost)
+	if err != nil {
+		log.Println("Error =", err.Error())
+	}
+	defer resp.Body.Close()
+
+	ioutil.ReadAll(resp.Body)
+	return err
 }
 
 // cmodel.MetaData --> cmodel.MetricValue
